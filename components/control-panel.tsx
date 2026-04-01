@@ -40,7 +40,7 @@ export function ControlPanel({
         <CardTitle className="text-base">Rotation Control</CardTitle>
         <CardDescription>
           {isEnabled
-            ? 'Rotation is active via cron job'
+            ? 'Rotation is active via QStash scheduler'
             : 'Enable to start automatic rotation'}
         </CardDescription>
       </CardHeader>

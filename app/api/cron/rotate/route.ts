@@ -1,16 +1,19 @@
 import { NextResponse } from 'next/server'
+import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
 import { getConfig, updateConfig, addLog } from '@/lib/redis'
 import { getImagesFromGitHub, downloadImage } from '@/lib/github'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-// This endpoint is called by Vercel Cron
-export async function GET(request: Request) {
-  // Verify cron secret in production
+// This endpoint is called by Upstash QStash
+async function handler(request: Request) {
+  // Also allow manual trigger with secret
   const authHeader = request.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const isManualTrigger = authHeader === `Bearer ${process.env.CRON_SECRET}`
+  
+  if (!isManualTrigger) {
+    // QStash signature will be verified by the wrapper
   }
 
   try {
@@ -125,4 +128,16 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ error: errorMessage }, { status: 500 })
   }
+}
+
+// Export POST handler with QStash signature verification
+export const POST = verifySignatureAppRouter(handler)
+
+// Also allow GET for manual testing with CRON_SECRET
+export async function GET(request: Request) {
+  const authHeader = request.headers.get('authorization')
+  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  return handler(request)
 }
