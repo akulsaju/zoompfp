@@ -6,12 +6,16 @@ export async function GET() {
   try {
     const config = await getConfig()
     
-    // Return config without exposing full token
+    // Return config without exposing full secrets
     if (config) {
       return NextResponse.json({
         ...config,
         zoomToken: config.zoomToken ? '••••••••' + config.zoomToken.slice(-4) : '',
+        qstashToken: '',
+        qstashSigningKey: '',
+        qstashNextSigningKey: '',
         hasToken: !!config.zoomToken,
+        hasQStash: !!(config.qstashToken && config.qstashSigningKey),
       })
     }
     
@@ -24,7 +28,11 @@ export async function GET() {
       enabled: false,
       currentIndex: 0,
       lastRotation: null,
+      qstashToken: '',
+      qstashSigningKey: '',
+      qstashNextSigningKey: '',
       hasToken: false,
+      hasQStash: false,
     })
   } catch (error) {
     return NextResponse.json(
@@ -43,7 +51,7 @@ export async function POST(request: Request) {
     
     const updates: Partial<RotatorConfig> = {}
     
-    if (body.zoomToken !== undefined && body.zoomToken !== '••••••••') {
+    if (body.zoomToken !== undefined && body.zoomToken !== '••••••••' && body.zoomToken !== '') {
       updates.zoomToken = body.zoomToken
     }
     if (body.githubRepo !== undefined) updates.githubRepo = body.githubRepo
@@ -52,6 +60,16 @@ export async function POST(request: Request) {
     if (body.intervalMinutes !== undefined) updates.intervalMinutes = body.intervalMinutes
     if (body.enabled !== undefined) updates.enabled = body.enabled
     if (body.currentIndex !== undefined) updates.currentIndex = body.currentIndex
+    // QStash credentials
+    if (body.qstashToken !== undefined && body.qstashToken !== '') {
+      updates.qstashToken = body.qstashToken
+    }
+    if (body.qstashSigningKey !== undefined && body.qstashSigningKey !== '') {
+      updates.qstashSigningKey = body.qstashSigningKey
+    }
+    if (body.qstashNextSigningKey !== undefined && body.qstashNextSigningKey !== '') {
+      updates.qstashNextSigningKey = body.qstashNextSigningKey
+    }
     
     // Handle QStash schedule when enabling/disabling
     const isEnabling = body.enabled === true && !currentConfig?.enabled
@@ -60,7 +78,17 @@ export async function POST(request: Request) {
       body.intervalMinutes !== currentConfig?.intervalMinutes &&
       currentConfig?.enabled
 
+    // Get QStash token (from update or existing config)
+    const qstashToken = updates.qstashToken || currentConfig?.qstashToken || ''
+
     if (isEnabling || intervalChanged) {
+      if (!qstashToken) {
+        return NextResponse.json(
+          { error: 'QStash token is required to enable scheduling' },
+          { status: 400 }
+        )
+      }
+
       // Create or update schedule
       const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL 
         ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
@@ -73,6 +101,7 @@ export async function POST(request: Request) {
       
       try {
         await createSchedule(
+          qstashToken,
           SCHEDULE_ID,
           `${baseUrl}/api/cron/rotate`,
           cron
@@ -94,15 +123,15 @@ export async function POST(request: Request) {
       }
     }
 
-    if (isDisabling) {
+    if (isDisabling && qstashToken) {
       // Delete schedule
       try {
-        await deleteSchedule(SCHEDULE_ID)
+        await deleteSchedule(qstashToken, SCHEDULE_ID)
         await addLog({
           message: 'Schedule deleted',
           type: 'info',
         })
-      } catch (error) {
+      } catch {
         // Non-fatal, schedule might not exist
       }
     }
@@ -112,7 +141,11 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...config,
       zoomToken: config.zoomToken ? '••••••••' + config.zoomToken.slice(-4) : '',
+      qstashToken: '',
+      qstashSigningKey: '',
+      qstashNextSigningKey: '',
       hasToken: !!config.zoomToken,
+      hasQStash: !!(config.qstashToken && config.qstashSigningKey),
     })
   } catch (error) {
     return NextResponse.json(

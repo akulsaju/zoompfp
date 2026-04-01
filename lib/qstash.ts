@@ -1,25 +1,19 @@
 import { Client } from '@upstash/qstash'
 
-let qstashClient: Client | null = null
-
-export function getQStash(): Client {
-  if (!qstashClient) {
-    if (!process.env.QSTASH_TOKEN) {
-      throw new Error('QSTASH_TOKEN is not set')
-    }
-    qstashClient = new Client({
-      token: process.env.QSTASH_TOKEN,
-    })
+export function getQStash(token: string): Client {
+  if (!token) {
+    throw new Error('QStash token is not configured')
   }
-  return qstashClient
+  return new Client({ token })
 }
 
 export async function createSchedule(
+  token: string,
   scheduleId: string,
   destination: string,
   cronExpression: string
 ): Promise<string> {
-  const qstash = getQStash()
+  const qstash = getQStash(token)
   
   // First try to delete any existing schedule with this ID
   try {
@@ -38,8 +32,8 @@ export async function createSchedule(
   return response.scheduleId
 }
 
-export async function deleteSchedule(scheduleId: string): Promise<void> {
-  const qstash = getQStash()
+export async function deleteSchedule(token: string, scheduleId: string): Promise<void> {
+  const qstash = getQStash(token)
   
   try {
     await qstash.schedules.delete(scheduleId)

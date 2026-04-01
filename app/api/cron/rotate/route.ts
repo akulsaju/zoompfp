@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
+import { Receiver } from '@upstash/qstash'
 import { getConfig, updateConfig, addLog } from '@/lib/redis'
 import { getImagesFromGitHub, downloadImage } from '@/lib/github'
 
@@ -7,17 +7,33 @@ export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
 // This endpoint is called by Upstash QStash
-async function handler(request: Request) {
-  // Also allow manual trigger with secret
-  const authHeader = request.headers.get('authorization')
-  const isManualTrigger = authHeader === `Bearer ${process.env.CRON_SECRET}`
-  
-  if (!isManualTrigger) {
-    // QStash signature will be verified by the wrapper
-  }
-
+export async function POST(request: Request) {
   try {
     const config = await getConfig()
+    
+    // Verify QStash signature using stored keys
+    if (config?.qstashSigningKey) {
+      const receiver = new Receiver({
+        currentSigningKey: config.qstashSigningKey,
+        nextSigningKey: config.qstashNextSigningKey || config.qstashSigningKey,
+      })
+      
+      const signature = request.headers.get('upstash-signature')
+      const body = await request.text()
+      
+      try {
+        await receiver.verify({
+          signature: signature || '',
+          body,
+        })
+      } catch {
+        await addLog({
+          message: 'QStash signature verification failed',
+          type: 'error',
+        })
+        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+      }
+    }
 
     if (!config || !config.enabled) {
       return NextResponse.json({ message: 'Rotator is disabled' })
@@ -130,14 +146,7 @@ async function handler(request: Request) {
   }
 }
 
-// Export POST handler with QStash signature verification
-export const POST = verifySignatureAppRouter(handler)
-
-// Also allow GET for manual testing with CRON_SECRET
-export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-  return handler(request)
+// GET for manual testing
+export async function GET() {
+  return NextResponse.json({ message: 'Use POST for QStash webhook or /api/trigger for manual trigger' })
 }

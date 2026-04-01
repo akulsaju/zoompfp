@@ -14,6 +14,10 @@ export interface RotatorConfig {
   enabled: boolean
   currentIndex: number
   lastRotation: string | null
+  // QStash credentials stored in Redis
+  qstashToken: string
+  qstashSigningKey: string
+  qstashNextSigningKey: string
 }
 
 const CONFIG_KEY = 'zoom-pfp-rotator:config'
@@ -38,6 +42,9 @@ export async function updateConfig(updates: Partial<RotatorConfig>): Promise<Rot
     enabled: false,
     currentIndex: 0,
     lastRotation: null,
+    qstashToken: '',
+    qstashSigningKey: '',
+    qstashNextSigningKey: '',
     ...current,
     ...updates,
   }

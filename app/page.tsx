@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import useSWR from 'swr'
 import { TokenInput } from '@/components/token-input'
 import { GitHubConfig } from '@/components/github-config'
+import { QStashConfig } from '@/components/qstash-config'
 import { ImagePreview } from '@/components/image-preview'
 import { IntervalSelector } from '@/components/interval-selector'
 import { ControlPanel } from '@/components/control-panel'
@@ -26,6 +27,7 @@ interface Config {
   currentIndex: number
   lastRotation: string | null
   hasToken: boolean
+  hasQStash: boolean
 }
 
 export default function Home() {
@@ -35,6 +37,9 @@ export default function Home() {
   const [folder, setFolder] = useState('images')
   const [branch, setBranch] = useState('main')
   const [interval, setIntervalValue] = useState(5)
+  const [qstashToken, setQstashToken] = useState('')
+  const [qstashSigningKey, setQstashSigningKey] = useState('')
+  const [qstashNextSigningKey, setQstashNextSigningKey] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
 
@@ -78,9 +83,12 @@ export default function Home() {
       repo !== (config.githubRepo || '') ||
       folder !== (config.githubFolder || 'images') ||
       branch !== (config.githubBranch || 'main') ||
-      interval !== (config.intervalMinutes || 5)
+      interval !== (config.intervalMinutes || 5) ||
+      qstashToken !== '' ||
+      qstashSigningKey !== '' ||
+      qstashNextSigningKey !== ''
     setHasChanges(changed)
-  }, [token, repo, folder, branch, interval, config])
+  }, [token, repo, folder, branch, interval, qstashToken, qstashSigningKey, qstashNextSigningKey, config])
 
   const handleSave = useCallback(async () => {
     setIsSaving(true)
@@ -94,6 +102,15 @@ export default function Home() {
       if (token) {
         body.zoomToken = token
       }
+      if (qstashToken) {
+        body.qstashToken = qstashToken
+      }
+      if (qstashSigningKey) {
+        body.qstashSigningKey = qstashSigningKey
+      }
+      if (qstashNextSigningKey) {
+        body.qstashNextSigningKey = qstashNextSigningKey
+      }
 
       const response = await fetch('/api/config', {
         method: 'POST',
@@ -103,6 +120,9 @@ export default function Home() {
 
       if (response.ok) {
         setToken('')
+        setQstashToken('')
+        setQstashSigningKey('')
+        setQstashNextSigningKey('')
         setHasChanges(false)
         mutateConfig()
         mutateImages()
@@ -110,7 +130,7 @@ export default function Home() {
     } finally {
       setIsSaving(false)
     }
-  }, [token, repo, folder, branch, interval, mutateConfig, mutateImages])
+  }, [token, repo, folder, branch, interval, qstashToken, qstashSigningKey, qstashNextSigningKey, mutateConfig, mutateImages])
 
   const handleToggle = useCallback(async () => {
     if (!config) return
@@ -143,7 +163,10 @@ export default function Home() {
     mutateLogs()
   }, [mutateLogs])
 
-  const canEnable = !!(config?.hasToken || token) && repo.length > 0 && images.length > 0
+  const canEnable = !!(config?.hasToken || token) && 
+    !!(config?.hasQStash || qstashToken) && 
+    repo.length > 0 && 
+    images.length > 0
 
   return (
     <div className="min-h-screen bg-background">
@@ -192,6 +215,16 @@ export default function Home() {
               onBranchChange={setBranch}
               disabled={config?.enabled}
             />
+            <QStashConfig
+              qstashToken={qstashToken}
+              qstashSigningKey={qstashSigningKey}
+              qstashNextSigningKey={qstashNextSigningKey}
+              hasQStash={config?.hasQStash || false}
+              onTokenChange={setQstashToken}
+              onSigningKeyChange={setQstashSigningKey}
+              onNextSigningKeyChange={setQstashNextSigningKey}
+              disabled={config?.enabled}
+            />
             <ImagePreview
               images={images}
               loading={imagesLoading}
@@ -230,11 +263,12 @@ export default function Home() {
               <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
                 <li>Add your Zoom OAuth token</li>
                 <li>Point to a public GitHub repo folder</li>
+                <li>Add QStash credentials from Upstash</li>
                 <li>Set your rotation interval</li>
-                <li>Enable - runs via Vercel Cron</li>
+                <li>Enable - runs via QStash scheduler</li>
               </ol>
               <p className="text-xs text-muted-foreground mt-4 pt-4 border-t border-border">
-                Settings persist in Redis. Rotation continues even when browser is closed.
+                Settings persist in Redis. QStash schedules rotation even when browser is closed.
               </p>
             </div>
           </div>
