@@ -40,7 +40,7 @@ export function ControlPanel({
         <CardTitle className="text-base">Rotation Control</CardTitle>
         <CardDescription>
           {isEnabled
-            ? 'Rotation is active via QStash scheduler'
+            ? 'Rotation is active - use webhook URL with cron service'
             : 'Enable to start automatic rotation'}
         </CardDescription>
       </CardHeader>
@@ -102,7 +102,7 @@ export function ControlPanel({
 
         {!canEnable && (
           <p className="text-xs text-muted-foreground">
-            Configure token and GitHub repo to enable.
+            Configure Zoom credentials and GitHub repo to enable.
           </p>
         )}
       </CardContent>

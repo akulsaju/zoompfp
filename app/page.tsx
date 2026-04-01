@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import useSWR from 'swr'
-import { TokenInput } from '@/components/token-input'
+import { ZoomConfig } from '@/components/zoom-config'
 import { GitHubConfig } from '@/components/github-config'
-import { QStashConfig } from '@/components/qstash-config'
+import { WebhookInfo } from '@/components/webhook-info'
 import { ImagePreview } from '@/components/image-preview'
 import { IntervalSelector } from '@/components/interval-selector'
 import { ControlPanel } from '@/components/control-panel'
@@ -18,7 +18,9 @@ import type { LogEntry } from '@/lib/redis'
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
 interface Config {
-  zoomToken: string
+  zoomAccountId: string
+  zoomClientId: string
+  zoomClientSecret: string
   githubRepo: string
   githubFolder: string
   githubBranch: string
@@ -26,20 +28,22 @@ interface Config {
   enabled: boolean
   currentIndex: number
   lastRotation: string | null
-  hasToken: boolean
-  hasQStash: boolean
+  webhookSecret: string
+  hasZoomCredentials: boolean
 }
 
 export default function Home() {
-  // Form state (local)
-  const [token, setToken] = useState('')
+  // Zoom credentials
+  const [accountId, setAccountId] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  // GitHub settings
   const [repo, setRepo] = useState('')
   const [folder, setFolder] = useState('images')
   const [branch, setBranch] = useState('main')
+  // Interval
   const [interval, setIntervalValue] = useState(5)
-  const [qstashToken, setQstashToken] = useState('')
-  const [qstashSigningKey, setQstashSigningKey] = useState('')
-  const [qstashNextSigningKey, setQstashNextSigningKey] = useState('')
+  // UI state
   const [isSaving, setIsSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
 
@@ -68,6 +72,8 @@ export default function Home() {
   // Sync form with config when loaded
   useEffect(() => {
     if (config) {
+      setAccountId(config.zoomAccountId || '')
+      setClientId(config.zoomClientId || '')
       setRepo(config.githubRepo || '')
       setFolder(config.githubFolder || 'images')
       setBranch(config.githubBranch || 'main')
@@ -79,37 +85,29 @@ export default function Home() {
   useEffect(() => {
     if (!config) return
     const changed =
-      token !== '' ||
+      accountId !== (config.zoomAccountId || '') ||
+      clientId !== (config.zoomClientId || '') ||
+      clientSecret !== '' ||
       repo !== (config.githubRepo || '') ||
       folder !== (config.githubFolder || 'images') ||
       branch !== (config.githubBranch || 'main') ||
-      interval !== (config.intervalMinutes || 5) ||
-      qstashToken !== '' ||
-      qstashSigningKey !== '' ||
-      qstashNextSigningKey !== ''
+      interval !== (config.intervalMinutes || 5)
     setHasChanges(changed)
-  }, [token, repo, folder, branch, interval, qstashToken, qstashSigningKey, qstashNextSigningKey, config])
+  }, [accountId, clientId, clientSecret, repo, folder, branch, interval, config])
 
   const handleSave = useCallback(async () => {
     setIsSaving(true)
     try {
       const body: Record<string, unknown> = {
+        zoomAccountId: accountId,
+        zoomClientId: clientId,
         githubRepo: repo,
         githubFolder: folder,
         githubBranch: branch,
         intervalMinutes: interval,
       }
-      if (token) {
-        body.zoomToken = token
-      }
-      if (qstashToken) {
-        body.qstashToken = qstashToken
-      }
-      if (qstashSigningKey) {
-        body.qstashSigningKey = qstashSigningKey
-      }
-      if (qstashNextSigningKey) {
-        body.qstashNextSigningKey = qstashNextSigningKey
+      if (clientSecret) {
+        body.zoomClientSecret = clientSecret
       }
 
       const response = await fetch('/api/config', {
@@ -119,10 +117,7 @@ export default function Home() {
       })
 
       if (response.ok) {
-        setToken('')
-        setQstashToken('')
-        setQstashSigningKey('')
-        setQstashNextSigningKey('')
+        setClientSecret('')
         setHasChanges(false)
         mutateConfig()
         mutateImages()
@@ -130,7 +125,7 @@ export default function Home() {
     } finally {
       setIsSaving(false)
     }
-  }, [token, repo, folder, branch, interval, qstashToken, qstashSigningKey, qstashNextSigningKey, mutateConfig, mutateImages])
+  }, [accountId, clientId, clientSecret, repo, folder, branch, interval, mutateConfig, mutateImages])
 
   const handleToggle = useCallback(async () => {
     if (!config) return
@@ -142,10 +137,11 @@ export default function Home() {
         body: JSON.stringify({ enabled: !config.enabled }),
       })
       mutateConfig()
+      mutateLogs()
     } finally {
       setIsSaving(false)
     }
-  }, [config, mutateConfig])
+  }, [config, mutateConfig, mutateLogs])
 
   const handleTrigger = useCallback(async () => {
     setIsSaving(true)
@@ -163,10 +159,7 @@ export default function Home() {
     mutateLogs()
   }, [mutateLogs])
 
-  const canEnable = !!(config?.hasToken || token) && 
-    !!(config?.hasQStash || qstashToken) && 
-    repo.length > 0 && 
-    images.length > 0
+  const canEnable = config?.hasZoomCredentials && repo.length > 0 && images.length > 0
 
   return (
     <div className="min-h-screen bg-background">
@@ -179,7 +172,7 @@ export default function Home() {
               </div>
               <div>
                 <h1 className="text-xl font-semibold text-foreground">Zoom PFP Rotator</h1>
-                <p className="text-sm text-muted-foreground">Server-side rotation via cron</p>
+                <p className="text-sm text-muted-foreground">Automatic profile picture rotation</p>
               </div>
             </div>
             <Button
@@ -200,10 +193,14 @@ export default function Home() {
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
-            <TokenInput
-              token={token}
-              hasToken={config?.hasToken || false}
-              onTokenChange={setToken}
+            <ZoomConfig
+              accountId={accountId}
+              clientId={clientId}
+              clientSecret={clientSecret}
+              hasCredentials={config?.hasZoomCredentials || false}
+              onAccountIdChange={setAccountId}
+              onClientIdChange={setClientId}
+              onClientSecretChange={setClientSecret}
               disabled={config?.enabled}
             />
             <GitHubConfig
@@ -213,16 +210,6 @@ export default function Home() {
               onRepoChange={setRepo}
               onFolderChange={setFolder}
               onBranchChange={setBranch}
-              disabled={config?.enabled}
-            />
-            <QStashConfig
-              qstashToken={qstashToken}
-              qstashSigningKey={qstashSigningKey}
-              qstashNextSigningKey={qstashNextSigningKey}
-              hasQStash={config?.hasQStash || false}
-              onTokenChange={setQstashToken}
-              onSigningKeyChange={setQstashSigningKey}
-              onNextSigningKeyChange={setQstashNextSigningKey}
               disabled={config?.enabled}
             />
             <ImagePreview
@@ -248,7 +235,7 @@ export default function Home() {
             />
             <ControlPanel
               isEnabled={config?.enabled || false}
-              canEnable={canEnable}
+              canEnable={canEnable || false}
               isSaving={isSaving}
               onToggle={handleToggle}
               onTrigger={handleTrigger}
@@ -257,18 +244,22 @@ export default function Home() {
               interval={interval}
               lastRotation={config?.lastRotation || null}
             />
+            <WebhookInfo
+              webhookSecret={config?.webhookSecret || ''}
+              isEnabled={config?.enabled || false}
+            />
 
             <div className="rounded-lg border border-border bg-card p-6">
               <h3 className="text-sm font-medium text-foreground mb-3">How it works</h3>
               <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
-                <li>Add your Zoom OAuth token</li>
-                <li>Point to a public GitHub repo folder</li>
-                <li>Add QStash credentials from Upstash</li>
-                <li>Set your rotation interval</li>
-                <li>Enable - runs via QStash scheduler</li>
+                <li>Add Zoom Server-to-Server OAuth credentials</li>
+                <li>Point to a public GitHub repo with images</li>
+                <li>Save and enable rotation</li>
+                <li>Copy webhook URL to cron-job.org</li>
+                <li>Profile picture rotates automatically</li>
               </ol>
               <p className="text-xs text-muted-foreground mt-4 pt-4 border-t border-border">
-                Settings persist in Redis. QStash schedules rotation even when browser is closed.
+                Settings persist in Redis. External cron service triggers rotation.
               </p>
             </div>
           </div>

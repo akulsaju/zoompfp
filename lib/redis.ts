@@ -6,22 +6,34 @@ export const redis = new Redis({
 })
 
 export interface RotatorConfig {
-  zoomToken: string
+  // Zoom Server-to-Server OAuth credentials
+  zoomAccountId: string
+  zoomClientId: string
+  zoomClientSecret: string
+  // GitHub repo for images
   githubRepo: string // format: "owner/repo"
-  githubFolder: string // e.g., "images/pfp"
+  githubFolder: string // e.g., "images"
   githubBranch: string // e.g., "main"
+  // Rotation settings
   intervalMinutes: number
   enabled: boolean
   currentIndex: number
   lastRotation: string | null
-  // QStash credentials stored in Redis
-  qstashToken: string
-  qstashSigningKey: string
-  qstashNextSigningKey: string
+  // Webhook secret for external cron calls
+  webhookSecret: string
 }
 
 const CONFIG_KEY = 'zoom-pfp-rotator:config'
 const LOGS_KEY = 'zoom-pfp-rotator:logs'
+
+function generateWebhookSecret(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  let result = ''
+  for (let i = 0; i < 32; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return result
+}
 
 export async function getConfig(): Promise<RotatorConfig | null> {
   return await redis.get<RotatorConfig>(CONFIG_KEY)
@@ -33,8 +45,12 @@ export async function setConfig(config: RotatorConfig): Promise<void> {
 
 export async function updateConfig(updates: Partial<RotatorConfig>): Promise<RotatorConfig> {
   const current = await getConfig()
+  const webhookSecret = current?.webhookSecret || generateWebhookSecret()
+  
   const newConfig: RotatorConfig = {
-    zoomToken: '',
+    zoomAccountId: '',
+    zoomClientId: '',
+    zoomClientSecret: '',
     githubRepo: '',
     githubFolder: 'images',
     githubBranch: 'main',
@@ -42,9 +58,7 @@ export async function updateConfig(updates: Partial<RotatorConfig>): Promise<Rot
     enabled: false,
     currentIndex: 0,
     lastRotation: null,
-    qstashToken: '',
-    qstashSigningKey: '',
-    qstashNextSigningKey: '',
+    webhookSecret,
     ...current,
     ...updates,
   }
@@ -72,7 +86,6 @@ export async function addLog(entry: Omit<LogEntry, 'id' | 'timestamp'>): Promise
     ...entry,
   }
   await redis.lpush(LOGS_KEY, log)
-  // Keep only last 100 logs
   await redis.ltrim(LOGS_KEY, 0, 99)
 }
 

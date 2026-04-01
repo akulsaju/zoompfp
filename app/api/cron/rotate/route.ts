@@ -1,68 +1,63 @@
 import { NextResponse } from 'next/server'
-import { Receiver } from '@upstash/qstash'
 import { getConfig, updateConfig, addLog } from '@/lib/redis'
 import { getImagesFromGitHub, downloadImage } from '@/lib/github'
+import { getZoomAccessToken, uploadZoomProfilePicture } from '@/lib/zoom'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-// This endpoint is called by Upstash QStash
+// This endpoint is called by external cron services (e.g., cron-job.org)
+// Use: GET /api/cron/rotate?secret=YOUR_WEBHOOK_SECRET
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const secret = searchParams.get('secret')
+  
+  const config = await getConfig()
+  
+  if (!config?.webhookSecret || secret !== config.webhookSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  return handleRotation()
+}
+
+// Also support POST with secret in header
 export async function POST(request: Request) {
+  const secret = request.headers.get('x-webhook-secret')
+  const config = await getConfig()
+  
+  if (!config?.webhookSecret || secret !== config.webhookSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  return handleRotation()
+}
+
+async function handleRotation() {
   try {
     const config = await getConfig()
-    
-    // Verify QStash signature using stored keys
-    if (config?.qstashSigningKey) {
-      const receiver = new Receiver({
-        currentSigningKey: config.qstashSigningKey,
-        nextSigningKey: config.qstashNextSigningKey || config.qstashSigningKey,
-      })
-      
-      const signature = request.headers.get('upstash-signature')
-      const body = await request.text()
-      
-      try {
-        await receiver.verify({
-          signature: signature || '',
-          body,
-        })
-      } catch {
-        await addLog({
-          message: 'QStash signature verification failed',
-          type: 'error',
-        })
-        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
-      }
+
+    if (!config) {
+      return NextResponse.json({ error: 'Not configured' }, { status: 400 })
     }
 
-    if (!config || !config.enabled) {
-      return NextResponse.json({ message: 'Rotator is disabled' })
+    if (!config.enabled) {
+      return NextResponse.json({ message: 'Rotation is disabled' })
     }
 
-    if (!config.zoomToken || !config.githubRepo || !config.githubFolder) {
-      await addLog({
-        message: 'Missing configuration (token, repo, or folder)',
-        type: 'error',
-      })
-      return NextResponse.json({ error: 'Missing configuration' }, { status: 400 })
+    // Check Zoom credentials
+    if (!config.zoomAccountId || !config.zoomClientId || !config.zoomClientSecret) {
+      await addLog({ message: 'Missing Zoom credentials', type: 'error' })
+      return NextResponse.json({ error: 'Missing Zoom credentials' }, { status: 400 })
     }
 
-    // Check if enough time has passed since last rotation
-    if (config.lastRotation) {
-      const lastRotation = new Date(config.lastRotation)
-      const now = new Date()
-      const minutesSinceLastRotation = (now.getTime() - lastRotation.getTime()) / 1000 / 60
-      
-      if (minutesSinceLastRotation < config.intervalMinutes) {
-        return NextResponse.json({ 
-          message: 'Not enough time has passed',
-          minutesSinceLastRotation,
-          intervalMinutes: config.intervalMinutes,
-        })
-      }
+    // Check GitHub repo
+    if (!config.githubRepo) {
+      await addLog({ message: 'GitHub repo not configured', type: 'error' })
+      return NextResponse.json({ error: 'GitHub repo not configured' }, { status: 400 })
     }
 
-    // Fetch images from GitHub
+    // Get images from GitHub
     const images = await getImagesFromGitHub(
       config.githubRepo,
       config.githubFolder,
@@ -70,83 +65,53 @@ export async function POST(request: Request) {
     )
 
     if (images.length === 0) {
-      await addLog({
-        message: 'No images found in GitHub folder',
-        type: 'error',
-      })
+      await addLog({ message: 'No images found in GitHub repo', type: 'error' })
       return NextResponse.json({ error: 'No images found' }, { status: 400 })
     }
 
-    // Calculate next index
-    const nextIndex = (config.currentIndex + 1) % images.length
-    const image = images[nextIndex]
+    // Select next image
+    const currentIndex = config.currentIndex % images.length
+    const selectedImage = images[currentIndex]
+    const nextIndex = (currentIndex + 1) % images.length
 
-    // Download the image
-    const imageBuffer = await downloadImage(image.download_url)
+    // Download image from GitHub
+    const imageData = await downloadImage(selectedImage.download_url)
+
+    // Get Zoom access token using Server-to-Server OAuth
+    const accessToken = await getZoomAccessToken(
+      config.zoomAccountId,
+      config.zoomClientId,
+      config.zoomClientSecret
+    )
 
     // Upload to Zoom
-    const formData = new FormData()
-    const blob = new Blob([imageBuffer], { type: 'image/png' })
-    formData.append('pic_file', blob, image.name)
+    await uploadZoomProfilePicture(
+      accessToken,
+      imageData.buffer,
+      imageData.contentType
+    )
 
-    const zoomResponse = await fetch('https://api.zoom.us/v2/users/me/picture', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${config.zoomToken}`,
-      },
-      body: formData,
-    })
-
-    if (!zoomResponse.ok) {
-      const errorText = await zoomResponse.text()
-      let errorMessage = `Zoom API error: ${zoomResponse.status}`
-      
-      if (zoomResponse.status === 401) {
-        errorMessage = 'Zoom token expired or invalid'
-      } else if (zoomResponse.status === 429) {
-        errorMessage = 'Rate limited by Zoom API'
-      }
-
-      await addLog({
-        message: errorMessage,
-        type: 'error',
-        imageName: image.name,
-      })
-
-      return NextResponse.json({ error: errorMessage, details: errorText }, { status: zoomResponse.status })
-    }
-
-    // Update config with new index and timestamp
+    // Update config
     await updateConfig({
       currentIndex: nextIndex,
       lastRotation: new Date().toISOString(),
     })
 
     await addLog({
-      message: `Profile picture updated to ${image.name}`,
+      message: `Profile picture updated to ${selectedImage.name}`,
       type: 'success',
-      imageName: image.name,
+      imageName: selectedImage.name,
     })
 
     return NextResponse.json({
       success: true,
-      image: image.name,
-      index: nextIndex,
-      totalImages: images.length,
+      image: selectedImage.name,
+      nextIndex,
     })
+
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-    
-    await addLog({
-      message: errorMessage,
-      type: 'error',
-    })
-
+    await addLog({ message: `Rotation failed: ${errorMessage}`, type: 'error' })
     return NextResponse.json({ error: errorMessage }, { status: 500 })
   }
-}
-
-// GET for manual testing
-export async function GET() {
-  return NextResponse.json({ message: 'Use POST for QStash webhook or /api/trigger for manual trigger' })
 }

@@ -38,11 +38,15 @@ export async function getImagesFromGitHub(
   )
 }
 
-export async function downloadImage(url: string): Promise<Buffer> {
+export async function downloadImage(url: string): Promise<{ buffer: Buffer; contentType: string }> {
   const response = await fetch(url)
   if (!response.ok) {
     throw new Error(`Failed to download image: ${response.status}`)
   }
+  const contentType = response.headers.get('content-type') || 'image/png'
   const arrayBuffer = await response.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    contentType,
+  }
 }
