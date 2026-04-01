@@ -1,161 +1,175 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import useSWR from 'swr'
 import { TokenInput } from '@/components/token-input'
-import { ImageUploader } from '@/components/image-uploader'
+import { GitHubConfig } from '@/components/github-config'
+import { ImagePreview } from '@/components/image-preview'
 import { IntervalSelector } from '@/components/interval-selector'
 import { ControlPanel } from '@/components/control-panel'
 import { LogsPanel } from '@/components/logs-panel'
-import type { UploadedImage, LogEntry } from '@/lib/types'
-import { Camera } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Camera, Save } from 'lucide-react'
+import { Spinner } from '@/components/ui/spinner'
+import type { GitHubFile } from '@/lib/github'
+import type { LogEntry } from '@/lib/redis'
+
+const fetcher = (url: string) => fetch(url).then((res) => res.json())
+
+interface Config {
+  zoomToken: string
+  githubRepo: string
+  githubFolder: string
+  githubBranch: string
+  intervalMinutes: number
+  enabled: boolean
+  currentIndex: number
+  lastRotation: string | null
+  hasToken: boolean
+}
 
 export default function Home() {
+  // Form state (local)
   const [token, setToken] = useState('')
-  const [images, setImages] = useState<UploadedImage[]>([])
-  const [interval, setInterval] = useState(5)
-  const [isRunning, setIsRunning] = useState(false)
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [repo, setRepo] = useState('')
+  const [folder, setFolder] = useState('images')
+  const [branch, setBranch] = useState('main')
+  const [interval, setIntervalValue] = useState(5)
+  const [isSaving, setIsSaving] = useState(false)
+  const [hasChanges, setHasChanges] = useState(false)
 
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
-  const imagesRef = useRef<UploadedImage[]>([])
-  const currentIndexRef = useRef(0)
-  const tokenRef = useRef('')
+  // Fetch config from Redis
+  const { data: config, mutate: mutateConfig } = useSWR<Config>('/api/config', fetcher, {
+    refreshInterval: 30000,
+  })
 
-  // Keep refs in sync with state
+  // Fetch logs from Redis
+  const { data: logs = [], mutate: mutateLogs, isLoading: logsLoading } = useSWR<LogEntry[]>(
+    '/api/logs',
+    fetcher,
+    { refreshInterval: 10000 }
+  )
+
+  // Fetch images from GitHub
+  const imageUrl = repo ? `/api/images?repo=${encodeURIComponent(repo)}&folder=${encodeURIComponent(folder)}&branch=${encodeURIComponent(branch)}` : null
+  const { data: imagesData, error: imagesError, isLoading: imagesLoading, mutate: mutateImages } = useSWR<GitHubFile[] | { error: string }>(
+    imageUrl,
+    fetcher
+  )
+
+  const images: GitHubFile[] = Array.isArray(imagesData) ? imagesData : []
+  const imagesErrorMessage = imagesData && 'error' in imagesData ? imagesData.error : imagesError?.message || null
+
+  // Sync form with config when loaded
   useEffect(() => {
-    imagesRef.current = images
-  }, [images])
-
-  useEffect(() => {
-    currentIndexRef.current = currentIndex
-  }, [currentIndex])
-
-  useEffect(() => {
-    tokenRef.current = token
-  }, [token])
-
-  const addLog = useCallback((message: string, type: LogEntry['type'], imageName?: string) => {
-    const entry: LogEntry = {
-      id: crypto.randomUUID(),
-      timestamp: new Date(),
-      message,
-      type,
-      imageName,
+    if (config) {
+      setRepo(config.githubRepo || '')
+      setFolder(config.githubFolder || 'images')
+      setBranch(config.githubBranch || 'main')
+      setIntervalValue(config.intervalMinutes || 5)
     }
-    setLogs((prev) => [entry, ...prev])
-  }, [])
+  }, [config])
 
-  const uploadImage = useCallback(async (image: UploadedImage): Promise<boolean> => {
-    if (!image.file) {
-      // Convert dataUrl back to file
-      const response = await fetch(image.dataUrl)
-      const blob = await response.blob()
-      image.file = new File([blob], image.name, { type: blob.type })
-    }
+  // Track changes
+  useEffect(() => {
+    if (!config) return
+    const changed =
+      token !== '' ||
+      repo !== (config.githubRepo || '') ||
+      folder !== (config.githubFolder || 'images') ||
+      branch !== (config.githubBranch || 'main') ||
+      interval !== (config.intervalMinutes || 5)
+    setHasChanges(changed)
+  }, [token, repo, folder, branch, interval, config])
 
-    const formData = new FormData()
-    formData.append('token', tokenRef.current)
-    formData.append('image', image.file)
-
+  const handleSave = useCallback(async () => {
+    setIsSaving(true)
     try {
-      const response = await fetch('/api/zoom/upload', {
+      const body: Record<string, unknown> = {
+        githubRepo: repo,
+        githubFolder: folder,
+        githubBranch: branch,
+        intervalMinutes: interval,
+      }
+      if (token) {
+        body.zoomToken = token
+      }
+
+      const response = await fetch('/api/config', {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       })
 
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Upload failed')
+      if (response.ok) {
+        setToken('')
+        setHasChanges(false)
+        mutateConfig()
+        mutateImages()
       }
-
-      return true
-    } catch (error) {
-      throw error
+    } finally {
+      setIsSaving(false)
     }
-  }, [])
+  }, [token, repo, folder, branch, interval, mutateConfig, mutateImages])
 
-  const rotateImage = useCallback(async () => {
-    const currentImages = imagesRef.current
-    if (currentImages.length === 0) return
-
-    const nextIndex = (currentIndexRef.current + 1) % currentImages.length
-    const image = currentImages[nextIndex]
-
+  const handleToggle = useCallback(async () => {
+    if (!config) return
+    setIsSaving(true)
     try {
-      await uploadImage(image)
-      addLog(`Profile picture updated to ${image.name}`, 'success', image.name)
-      setCurrentIndex(nextIndex)
-    } catch (error) {
-      addLog(
-        error instanceof Error ? error.message : 'Failed to update profile picture',
-        'error',
-        image.name
-      )
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !config.enabled }),
+      })
+      mutateConfig()
+    } finally {
+      setIsSaving(false)
     }
-  }, [uploadImage, addLog])
+  }, [config, mutateConfig])
 
-  const handleStart = useCallback(async () => {
-    if (!token || images.length === 0) return
-
-    setIsRunning(true)
-    addLog('Rotation started', 'info')
-
-    // Upload first image immediately
-    const firstImage = images[0]
+  const handleTrigger = useCallback(async () => {
+    setIsSaving(true)
     try {
-      await uploadImage(firstImage)
-      addLog(`Profile picture set to ${firstImage.name}`, 'success', firstImage.name)
-      setCurrentIndex(0)
-    } catch (error) {
-      addLog(
-        error instanceof Error ? error.message : 'Failed to set initial profile picture',
-        'error',
-        firstImage.name
-      )
+      await fetch('/api/trigger', { method: 'POST' })
+      mutateConfig()
+      mutateLogs()
+    } finally {
+      setIsSaving(false)
     }
+  }, [mutateConfig, mutateLogs])
 
-    // Set up interval for subsequent rotations
-    intervalRef.current = setInterval(rotateImage, interval * 60 * 1000)
-  }, [token, images, interval, uploadImage, addLog, rotateImage])
+  const handleClearLogs = useCallback(async () => {
+    await fetch('/api/logs', { method: 'DELETE' })
+    mutateLogs()
+  }, [mutateLogs])
 
-  const handleStop = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
-    }
-    setIsRunning(false)
-    addLog('Rotation stopped', 'info')
-  }, [addLog])
-
-  const handleClearLogs = useCallback(() => {
-    setLogs([])
-  }, [])
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-      }
-    }
-  }, [])
-
-  const canStart = token.length > 0 && images.length > 0
+  const canEnable = !!(config?.hasToken || token) && repo.length > 0 && images.length > 0
 
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Camera className="h-5 w-5 text-primary" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Camera className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold text-foreground">Zoom PFP Rotator</h1>
+                <p className="text-sm text-muted-foreground">Server-side rotation via cron</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-semibold text-foreground">Zoom PFP Rotator</h1>
-              <p className="text-sm text-muted-foreground">Automatically rotate your profile picture</p>
-            </div>
+            <Button
+              onClick={handleSave}
+              disabled={!hasChanges || isSaving}
+            >
+              {isSaving ? (
+                <Spinner className="h-4 w-4 mr-2" />
+              ) : (
+                <Save className="h-4 w-4 mr-2" />
+              )}
+              Save Changes
+            </Button>
           </div>
         </div>
       </header>
@@ -163,41 +177,65 @@ export default function Home() {
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
-            <TokenInput token={token} onTokenChange={setToken} />
-            <ImageUploader
-              images={images}
-              onImagesChange={setImages}
-              currentIndex={currentIndex}
-              isRunning={isRunning}
+            <TokenInput
+              token={token}
+              hasToken={config?.hasToken || false}
+              onTokenChange={setToken}
+              disabled={config?.enabled}
             />
-            <LogsPanel logs={logs} onClearLogs={handleClearLogs} />
+            <GitHubConfig
+              repo={repo}
+              folder={folder}
+              branch={branch}
+              onRepoChange={setRepo}
+              onFolderChange={setFolder}
+              onBranchChange={setBranch}
+              disabled={config?.enabled}
+            />
+            <ImagePreview
+              images={images}
+              loading={imagesLoading}
+              error={imagesErrorMessage}
+              currentIndex={config?.currentIndex || 0}
+              onRefresh={() => mutateImages()}
+            />
+            <LogsPanel
+              logs={logs}
+              loading={logsLoading}
+              onRefresh={() => mutateLogs()}
+              onClearLogs={handleClearLogs}
+            />
           </div>
 
           <div className="space-y-6">
             <IntervalSelector
               interval={interval}
-              onIntervalChange={setInterval}
-              disabled={isRunning}
+              onIntervalChange={setIntervalValue}
+              disabled={config?.enabled}
             />
             <ControlPanel
-              isRunning={isRunning}
-              canStart={canStart}
-              onStart={handleStart}
-              onStop={handleStop}
-              currentIndex={currentIndex}
+              isEnabled={config?.enabled || false}
+              canEnable={canEnable}
+              isSaving={isSaving}
+              onToggle={handleToggle}
+              onTrigger={handleTrigger}
+              currentIndex={config?.currentIndex || 0}
               totalImages={images.length}
               interval={interval}
+              lastRotation={config?.lastRotation || null}
             />
 
             <div className="rounded-lg border border-border bg-card p-6">
-              <h3 className="text-sm font-medium text-foreground mb-3">How to get your Zoom token</h3>
+              <h3 className="text-sm font-medium text-foreground mb-3">How it works</h3>
               <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
-                <li>Go to the Zoom App Marketplace</li>
-                <li>Create or use an existing OAuth app</li>
-                <li>Add the <code className="text-primary bg-secondary px-1 rounded">user:write</code> scope</li>
-                <li>Generate an access token</li>
-                <li>Paste the token above</li>
+                <li>Add your Zoom OAuth token</li>
+                <li>Point to a public GitHub repo folder</li>
+                <li>Set your rotation interval</li>
+                <li>Enable - runs via Vercel Cron</li>
               </ol>
+              <p className="text-xs text-muted-foreground mt-4 pt-4 border-t border-border">
+                Settings persist in Redis. Rotation continues even when browser is closed.
+              </p>
             </div>
           </div>
         </div>

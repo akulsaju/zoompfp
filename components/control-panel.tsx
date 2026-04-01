@@ -1,94 +1,111 @@
 'use client'
 
-import { Play, Square, RotateCw } from 'lucide-react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
+import { Play, Square, Zap, Clock, Image } from 'lucide-react'
 
 interface ControlPanelProps {
-  isRunning: boolean
-  canStart: boolean
-  onStart: () => void
-  onStop: () => void
+  isEnabled: boolean
+  canEnable: boolean
+  isSaving: boolean
+  onToggle: () => void
+  onTrigger: () => void
   currentIndex: number
   totalImages: number
   interval: number
+  lastRotation: string | null
 }
 
 export function ControlPanel({
-  isRunning,
-  canStart,
-  onStart,
-  onStop,
+  isEnabled,
+  canEnable,
+  isSaving,
+  onToggle,
+  onTrigger,
   currentIndex,
   totalImages,
   interval,
+  lastRotation,
 }: ControlPanelProps) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-6">
-      <div className="flex items-center gap-2 mb-4">
-        <RotateCw className={`h-5 w-5 text-primary ${isRunning ? 'animate-spin' : ''}`} />
-        <h2 className="text-lg font-semibold text-foreground">Automation Control</h2>
-      </div>
+  const formatLastRotation = (iso: string | null) => {
+    if (!iso) return 'Never'
+    const date = new Date(iso)
+    return date.toLocaleString()
+  }
 
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <p className="text-sm text-muted-foreground">Status</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                isRunning ? 'bg-primary animate-pulse' : 'bg-muted-foreground'
-              }`}
-            />
-            <span className={`font-medium ${isRunning ? 'text-primary' : 'text-muted-foreground'}`}>
-              {isRunning ? 'Running' : 'Stopped'}
+  return (
+    <Card>
+      <CardHeader className="pb-4">
+        <CardTitle className="text-base">Rotation Control</CardTitle>
+        <CardDescription>
+          {isEnabled
+            ? 'Rotation is active via cron job'
+            : 'Enable to start automatic rotation'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center gap-3">
+          <div
+            className={`h-3 w-3 rounded-full ${
+              isEnabled ? 'bg-primary animate-pulse' : 'bg-muted-foreground/30'
+            }`}
+          />
+          <span className="text-sm font-medium">
+            {isEnabled ? 'Enabled' : 'Disabled'}
+          </span>
+        </div>
+
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Clock className="h-4 w-4" />
+            <span>Interval: Every {interval} minutes</span>
+          </div>
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Image className="h-4 w-4" />
+            <span>
+              Position: {totalImages > 0 ? `${currentIndex + 1} of ${totalImages}` : 'N/A'}
             </span>
           </div>
-        </div>
-
-        {isRunning && totalImages > 0 && (
-          <div className="text-right">
-            <p className="text-sm text-muted-foreground">Current Image</p>
-            <p className="font-medium text-foreground mt-1">
-              {currentIndex + 1} of {totalImages}
-            </p>
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Zap className="h-4 w-4" />
+            <span>Last: {formatLastRotation(lastRotation)}</span>
           </div>
-        )}
-      </div>
-
-      {isRunning && (
-        <div className="mb-6 p-3 bg-secondary/50 rounded-lg">
-          <p className="text-sm text-muted-foreground">
-            Next rotation in <span className="text-foreground font-medium">{interval} minutes</span>
-          </p>
         </div>
-      )}
 
-      <div className="flex gap-3">
-        {!isRunning ? (
+        <div className="flex gap-2 pt-2">
           <Button
-            onClick={onStart}
-            disabled={!canStart}
-            className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Play className="h-4 w-4 mr-2" />
-            Start Rotation
-          </Button>
-        ) : (
-          <Button
-            onClick={onStop}
-            variant="destructive"
+            onClick={onToggle}
+            disabled={!canEnable || isSaving}
+            variant={isEnabled ? 'destructive' : 'default'}
             className="flex-1"
           >
-            <Square className="h-4 w-4 mr-2" />
-            Stop Rotation
+            {isSaving ? (
+              <Spinner className="h-4 w-4 mr-2" />
+            ) : isEnabled ? (
+              <Square className="h-4 w-4 mr-2" />
+            ) : (
+              <Play className="h-4 w-4 mr-2" />
+            )}
+            {isEnabled ? 'Disable' : 'Enable'}
           </Button>
-        )}
-      </div>
+          <Button
+            onClick={onTrigger}
+            disabled={!isEnabled || isSaving}
+            variant="outline"
+            title="Trigger rotation now"
+          >
+            <Zap className="h-4 w-4" />
+            <span className="sr-only">Trigger now</span>
+          </Button>
+        </div>
 
-      {!canStart && !isRunning && (
-        <p className="text-xs text-muted-foreground mt-3 text-center">
-          Add a token and at least one image to start
-        </p>
-      )}
-    </div>
+        {!canEnable && (
+          <p className="text-xs text-muted-foreground">
+            Configure token and GitHub repo to enable.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
